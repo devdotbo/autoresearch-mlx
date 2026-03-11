@@ -7,6 +7,8 @@ Usage: uv run train.py
 import gc
 import math
 import os
+import platform
+import subprocess
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -14,7 +16,6 @@ from functools import partial
 import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_map
-
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, evaluate_bpb, make_dataloader
 
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -56,6 +57,40 @@ def create_sliding_window_mask(seq_len, window_size, dtype=mx.float32):
 
 def get_peak_memory_mb():
     return mx.get_peak_memory() / 1024 / 1024
+
+
+def get_machine_id():
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        chip = result.stdout.strip()
+        if chip:
+            return chip
+    except Exception:
+        pass
+    return platform.processor() or "unknown"
+
+
+def get_git_commit():
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        commit = result.stdout.strip()
+        if commit:
+            return commit
+    except Exception:
+        pass
+    return "unknown"
 
 
 class CausalSelfAttention(nn.Module):
@@ -151,17 +186,29 @@ class GPT(nn.Module):
         scale = 3**0.5 * n_embd**-0.5
 
         self.wte.weight = (mx.random.normal(self.wte.weight.shape) * 1.0).astype(mx.bfloat16)
-        self.lm_head.weight = (mx.random.normal(self.lm_head.weight.shape) * 0.001).astype(mx.bfloat16)
+        self.lm_head.weight = (mx.random.normal(self.lm_head.weight.shape) * 0.001).astype(
+            mx.bfloat16
+        )
 
         for block in self.blocks:
-            block.attn.c_q.weight = mx.random.uniform(-scale, scale, block.attn.c_q.weight.shape).astype(mx.bfloat16)
-            block.attn.c_k.weight = mx.random.uniform(-scale, scale, block.attn.c_k.weight.shape).astype(mx.bfloat16)
-            block.attn.c_v.weight = mx.random.uniform(-scale, scale, block.attn.c_v.weight.shape).astype(mx.bfloat16)
+            block.attn.c_q.weight = mx.random.uniform(
+                -scale, scale, block.attn.c_q.weight.shape
+            ).astype(mx.bfloat16)
+            block.attn.c_k.weight = mx.random.uniform(
+                -scale, scale, block.attn.c_k.weight.shape
+            ).astype(mx.bfloat16)
+            block.attn.c_v.weight = mx.random.uniform(
+                -scale, scale, block.attn.c_v.weight.shape
+            ).astype(mx.bfloat16)
             block.attn.c_proj.weight = mx.zeros_like(block.attn.c_proj.weight).astype(mx.bfloat16)
-            block.mlp.c_fc.weight = mx.random.uniform(-scale, scale, block.mlp.c_fc.weight.shape).astype(mx.bfloat16)
+            block.mlp.c_fc.weight = mx.random.uniform(
+                -scale, scale, block.mlp.c_fc.weight.shape
+            ).astype(mx.bfloat16)
             block.mlp.c_proj.weight = mx.zeros_like(block.mlp.c_proj.weight).astype(mx.bfloat16)
             if block.attn.ve_gate is not None:
-                block.attn.ve_gate.weight = mx.zeros_like(block.attn.ve_gate.weight).astype(mx.bfloat16)
+                block.attn.ve_gate.weight = mx.zeros_like(block.attn.ve_gate.weight).astype(
+                    mx.bfloat16
+                )
 
         self.resid_lambdas = mx.ones((self.config.n_layer,), dtype=mx.float32)
         self.x0_lambdas = mx.full((self.config.n_layer,), 0.1, dtype=mx.float32)
@@ -280,14 +327,30 @@ def muon_step_fused(
     lr_scaled = lr * max(1.0, rows / cols) ** 0.5
     params_f32 = stacked_params.astype(mx.float32)
     mask = (g * params_f32) >= 0
-    new_params = params_f32 - lr_scaled * g - lr_scaled * weight_decay * params_f32 * mask.astype(params_f32.dtype)
-    return new_params.astype(stacked_params.dtype), momentum_buffer, second_momentum_f32.astype(
-        second_momentum_buffer.dtype
+    new_params = (
+        params_f32
+        - lr_scaled * g
+        - lr_scaled * weight_decay * params_f32 * mask.astype(params_f32.dtype)
+    )
+    return (
+        new_params.astype(stacked_params.dtype),
+        momentum_buffer,
+        second_momentum_f32.astype(second_momentum_buffer.dtype),
     )
 
 
 class MuonAdamW:
-    def __init__(self, model, unembedding_lr, embedding_lr, matrix_lr, weight_decay, adam_betas, scalar_lr):
+    def __init__(
+        self,
+        model,
+        unembedding_lr,
+        embedding_lr,
+        matrix_lr,
+        weight_decay,
+        adam_betas,
+        scalar_lr,
+        use_muon=True,
+    ):
         self.adam_config = {}
         self.adam_state = {}
         self.muon_groups = []
@@ -300,7 +363,17 @@ class MuonAdamW:
         flat_params = tree_flatten(model.parameters())
         for path, param in flat_params:
             if "blocks" in path and param.ndim == 2:
-                muon_groups_by_shape.setdefault(param.shape, []).append(path)
+                if use_muon:
+                    muon_groups_by_shape.setdefault(param.shape, []).append(path)
+                else:
+                    # Controlled first pass: keep matrix params on the same raw
+                    # LR and weight decay as the Muon path so only the optimizer changes.
+                    self.adam_config[path] = {
+                        "lr": matrix_lr,
+                        "betas": adam_betas,
+                        "eps": 1e-10,
+                        "weight_decay": weight_decay,
+                    }
             elif "wte" in path:
                 self.adam_config[path] = {
                     "lr": embedding_lr * dmodel_lr_scale,
@@ -502,6 +575,8 @@ DEPTH = 4
 DEVICE_BATCH_SIZE = 16
 FINAL_EVAL_BATCH_SIZE = 256
 STARTUP_EXCLUDE_STEPS = 1
+SEED = int(os.environ.get("AUTORESEARCH_SEED", "42"))
+USE_MUON = os.environ.get("AUTORESEARCH_OPTIMIZER", "muon").lower() == "muon"
 
 
 def get_lr_multiplier(progress):
@@ -523,7 +598,7 @@ def get_weight_decay(progress):
 
 
 t_start = time.time()
-mx.random.seed(42)
+mx.random.seed(SEED)
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -563,6 +638,7 @@ optimizer = MuonAdamW(
     weight_decay=WEIGHT_DECAY,
     adam_betas=ADAM_BETAS,
     scalar_lr=SCALAR_LR,
+    use_muon=USE_MUON,
 )
 
 _loss_grad_fn = nn.value_and_grad(model, lambda inputs, targets: model(inputs, targets=targets))
@@ -572,6 +648,7 @@ compiled_state = [model.state]
 @partial(mx.compile, inputs=compiled_state, outputs=compiled_state)
 def loss_grad_fn(inputs, targets):
     return _loss_grad_fn(inputs, targets)
+
 
 print(f"Time budget: {TIME_BUDGET}s")
 print(f"Gradient accumulation steps: {grad_accum_steps}")
@@ -628,7 +705,7 @@ while True:
 
     print(
         f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | "
-        f"lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | "
+        f"lrm: {lrm:.2f} | dt: {dt * 1000:.0f}ms | tok/sec: {tok_per_sec:,} | "
         f"epoch: {epoch} | remaining: {remaining:.0f}s    ",
         end="",
         flush=True,
