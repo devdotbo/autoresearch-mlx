@@ -732,7 +732,8 @@ print()
 t_train = time.time()
 print(f"Training completed in {t_train - t_compiled:.1f}s")
 
-total_tokens = step * TOTAL_BATCH_SIZE
+timed_steps = max(step - STARTUP_EXCLUDE_STEPS, 0)
+total_tokens = timed_steps * TOTAL_BATCH_SIZE
 print("Starting final eval...")
 print(f"Final eval batch size: {FINAL_EVAL_BATCH_SIZE}")
 val_bpb = evaluate_bpb(model, tokenizer, FINAL_EVAL_BATCH_SIZE)
@@ -766,8 +767,11 @@ record = {
     "weight_decay": WEIGHT_DECAY,
     "adam_betas": list(ADAM_BETAS),
     "total_batch_size": TOTAL_BATCH_SIZE,
+    "dmodel_lr_scale": round((model_dim / 768) ** -0.5, 6),
+    "matrix_lr_uses_dmodel_scale": False,
     "val_bpb": round(val_bpb, 6),
     "num_steps": step,
+    "timed_steps": timed_steps,
     "total_tokens_M": round(total_tokens / 1e6, 1),
     "data_load_seconds": data_load_seconds,
     "compile_seconds": compile_seconds,
@@ -789,6 +793,7 @@ print(f"peak_vram_mb:     {peak_vram_mb:.1f}")
 print(f"mfu_percent:      {steady_state_mfu:.2f}")
 print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
 print(f"num_steps:        {step}")
+print(f"timed_steps:      {timed_steps}")
 print(f"num_params_M:     {num_params / 1e6:.1f}")
 print(f"depth:            {DEPTH}")
 print(f"seed:             {SEED}")
