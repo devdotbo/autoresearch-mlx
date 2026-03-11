@@ -23,6 +23,26 @@ from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, evaluate_bpb, make_data
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 
+def env_int(name, default):
+    return int(os.environ.get(name, str(default)))
+
+
+def env_float(name, default):
+    return float(os.environ.get(name, str(default)))
+
+
+def env_str(name, default):
+    return os.environ.get(name, default)
+
+
+def env_betas(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    beta1, beta2 = raw.split(",")
+    return (float(beta1), float(beta2))
+
+
 @dataclass
 class GPTConfig:
     sequence_len: int = 2048
@@ -555,30 +575,32 @@ class MuonAdamW:
 # ---------------------------------------------------------------------------
 
 # Model architecture
-ASPECT_RATIO = 64
-HEAD_DIM = 128
-WINDOW_PATTERN = "L"
+ASPECT_RATIO = env_int("AUTORESEARCH_ASPECT_RATIO", 64)
+HEAD_DIM = env_int("AUTORESEARCH_HEAD_DIM", 128)
+WINDOW_PATTERN = env_str("AUTORESEARCH_WINDOW_PATTERN", "L")
 
-TOTAL_BATCH_SIZE = 2**16
-EMBEDDING_LR = 0.6
-UNEMBEDDING_LR = 0.004
-MATRIX_LR = 0.04
-MUON_NS_STEPS = 5
-MUON_BETA2 = 0.95
-SCALAR_LR = 0.5
-WEIGHT_DECAY = 0.2
-ADAM_BETAS = (0.8, 0.95)
-WARMUP_RATIO = 0.0
-WARMDOWN_RATIO = 0.5
-FINAL_LR_FRAC = 0.0
+TOTAL_BATCH_SIZE = env_int("AUTORESEARCH_TOTAL_BATCH_SIZE", 2**16)
+EMBEDDING_LR = env_float("AUTORESEARCH_EMBEDDING_LR", 0.6)
+UNEMBEDDING_LR = env_float("AUTORESEARCH_UNEMBEDDING_LR", 0.004)
+MATRIX_LR = env_float("AUTORESEARCH_MATRIX_LR", 0.04)
+MUON_NS_STEPS = env_int("AUTORESEARCH_MUON_NS_STEPS", 5)
+MUON_BETA2 = env_float("AUTORESEARCH_MUON_BETA2", 0.95)
+SCALAR_LR = env_float("AUTORESEARCH_SCALAR_LR", 0.5)
+WEIGHT_DECAY = env_float("AUTORESEARCH_WEIGHT_DECAY", 0.2)
+ADAM_BETAS = env_betas("AUTORESEARCH_ADAM_BETAS", (0.8, 0.95))
+WARMUP_RATIO = env_float("AUTORESEARCH_WARMUP_RATIO", 0.0)
+WARMDOWN_RATIO = env_float("AUTORESEARCH_WARMDOWN_RATIO", 0.5)
+FINAL_LR_FRAC = env_float("AUTORESEARCH_FINAL_LR_FRAC", 0.0)
+MOMENTUM_SCHEDULE = env_str("AUTORESEARCH_MOMENTUM_SCHEDULE", "baseline")
+WEIGHT_DECAY_SCHEDULE = env_str("AUTORESEARCH_WEIGHT_DECAY_SCHEDULE", "linear")
 
 # Model size
-DEPTH = 4
-DEVICE_BATCH_SIZE = 16
-FINAL_EVAL_BATCH_SIZE = 256
-STARTUP_EXCLUDE_STEPS = 1
-SEED = int(os.environ.get("AUTORESEARCH_SEED", "42"))
-USE_MUON = os.environ.get("AUTORESEARCH_OPTIMIZER", "muon").lower() == "muon"
+DEPTH = env_int("AUTORESEARCH_DEPTH", 4)
+DEVICE_BATCH_SIZE = env_int("AUTORESEARCH_DEVICE_BATCH_SIZE", 16)
+FINAL_EVAL_BATCH_SIZE = env_int("AUTORESEARCH_FINAL_EVAL_BATCH_SIZE", 256)
+STARTUP_EXCLUDE_STEPS = env_int("AUTORESEARCH_STARTUP_EXCLUDE_STEPS", 1)
+SEED = env_int("AUTORESEARCH_SEED", 42)
+USE_MUON = env_str("AUTORESEARCH_OPTIMIZER", "muon").lower() == "muon"
 
 
 def get_lr_multiplier(progress):
@@ -591,11 +613,23 @@ def get_lr_multiplier(progress):
 
 
 def get_muon_momentum(step):
+    if MOMENTUM_SCHEDULE == "constant_095":
+        return 0.95
+    if MOMENTUM_SCHEDULE == "flat":
+        frac = min(step / 600, 1)
+        return (1 - frac) * 0.90 + frac * 0.95
+    if MOMENTUM_SCHEDULE == "fast_ramp":
+        frac = min(step / 150, 1)
+        return (1 - frac) * 0.85 + frac * 0.95
     frac = min(step / 300, 1)
     return (1 - frac) * 0.85 + frac * 0.95
 
 
 def get_weight_decay(progress):
+    if WEIGHT_DECAY_SCHEDULE == "constant":
+        return WEIGHT_DECAY
+    if WEIGHT_DECAY_SCHEDULE == "slow_linear":
+        return WEIGHT_DECAY * (1 - 0.5 * progress)
     return WEIGHT_DECAY * (1 - progress)
 
 
@@ -765,7 +799,9 @@ record = {
     "matrix_lr": MATRIX_LR,
     "effective_matrix_lr": MATRIX_LR,
     "weight_decay": WEIGHT_DECAY,
+    "weight_decay_schedule": WEIGHT_DECAY_SCHEDULE,
     "adam_betas": list(ADAM_BETAS),
+    "momentum_schedule": MOMENTUM_SCHEDULE,
     "total_batch_size": TOTAL_BATCH_SIZE,
     "dmodel_lr_scale": round((model_dim / 768) ** -0.5, 6),
     "matrix_lr_uses_dmodel_scale": False,
