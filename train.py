@@ -5,9 +5,11 @@ Usage: uv run train.py
 """
 
 import gc
+import json
 import math
 import os
 import platform
+import statistics
 import subprocess
 import time
 from dataclasses import dataclass
@@ -655,6 +657,8 @@ print(f"Gradient accumulation steps: {grad_accum_steps}")
 
 smooth_train_loss = 0.0
 total_training_time = 0.0
+step_times = []
+step_toksec = []
 step = 0
 t_compiled = None
 
@@ -693,14 +697,16 @@ while True:
         raise SystemExit(1)
 
     dt = time.time() - t0
+    tok_per_sec = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
     if step >= STARTUP_EXCLUDE_STEPS:
         total_training_time += dt
+        step_times.append(dt)
+        step_toksec.append(tok_per_sec)
 
     ema_beta = 0.9
     smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step + 1))
     pct_done = 100 * progress
-    tok_per_sec = int(TOTAL_BATCH_SIZE / dt) if dt > 0 else 0
     remaining = max(0.0, TIME_BUDGET - total_training_time)
 
     print(
@@ -735,6 +741,45 @@ print(f"Final eval completed in {t_eval - t_train:.1f}s")
 
 steady_state_mfu = 0.0
 peak_vram_mb = get_peak_memory_mb()
+data_load_seconds = round(t_data - t_start, 1)
+compile_seconds = round(t_compiled - t_data, 1) if t_compiled is not None else 0.0
+avg_toksec = round(statistics.mean(step_toksec)) if step_toksec else 0
+median_toksec = round(statistics.median(step_toksec)) if step_toksec else 0
+avg_step_ms = round(statistics.mean(step_times) * 1000, 1) if step_times else 0.0
+median_step_ms = round(statistics.median(step_times) * 1000, 1) if step_times else 0.0
+optimizer_name = "muon" if USE_MUON else "adamw"
+machine_id = get_machine_id()
+record = {
+    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    "commit": get_git_commit(),
+    "seed": SEED,
+    "optimizer": optimizer_name,
+    "machine": machine_id,
+    "mlx_version": mx.__version__,
+    "depth": DEPTH,
+    "aspect_ratio": ASPECT_RATIO,
+    "head_dim": HEAD_DIM,
+    "window_pattern": WINDOW_PATTERN,
+    "num_params_M": round(num_params / 1e6, 1),
+    "matrix_lr": MATRIX_LR,
+    "effective_matrix_lr": MATRIX_LR,
+    "weight_decay": WEIGHT_DECAY,
+    "adam_betas": list(ADAM_BETAS),
+    "total_batch_size": TOTAL_BATCH_SIZE,
+    "val_bpb": round(val_bpb, 6),
+    "num_steps": step,
+    "total_tokens_M": round(total_tokens / 1e6, 1),
+    "data_load_seconds": data_load_seconds,
+    "compile_seconds": compile_seconds,
+    "training_seconds": round(total_training_time, 1),
+    "total_seconds": round(t_eval - t_start, 1),
+    "peak_vram_mb": round(peak_vram_mb, 1),
+    "avg_tok_sec": avg_toksec,
+    "median_tok_sec": median_toksec,
+    "avg_step_ms": avg_step_ms,
+    "median_step_ms": median_step_ms,
+}
+jsonl_path = os.environ.get("AUTORESEARCH_BENCH_LOG", "/tmp/autoresearch_bench.jsonl")
 
 print("---")
 print(f"val_bpb:          {val_bpb:.6f}")
@@ -746,3 +791,18 @@ print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
 print(f"num_steps:        {step}")
 print(f"num_params_M:     {num_params / 1e6:.1f}")
 print(f"depth:            {DEPTH}")
+print(f"seed:             {SEED}")
+print(f"optimizer:        {optimizer_name}")
+print(f"machine:          {machine_id}")
+print(f"data_load_sec:    {data_load_seconds}")
+print(f"compile_sec:      {compile_seconds}")
+print(f"avg_tok_sec:      {avg_toksec}")
+print(f"median_tok_sec:   {median_toksec}")
+print(f"avg_step_ms:      {avg_step_ms}")
+print(f"median_step_ms:   {median_step_ms}")
+
+with open(jsonl_path, "a", encoding="utf-8") as f:
+    f.write(json.dumps(record) + "\n")
+
+print(f"Result appended to {jsonl_path}")
+print("JSON:" + json.dumps(record))
