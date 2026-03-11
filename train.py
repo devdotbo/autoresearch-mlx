@@ -97,7 +97,7 @@ class CausalSelfAttention(nn.Module):
         k = norm(self.rope(k))
 
         scale = 1.0 / math.sqrt(self.head_dim)
-        y = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        y = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask.astype(q.dtype))
         y = y.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
         return self.c_proj(y)
 
