@@ -6,3 +6,4 @@ c67ad2a	2.695369	26.9	discard	lower weight decay to 0.1
 5efc7aa	1.807902	20.7	keep	reduce depth from 8 to 4
 ba6ebf6	1.803905	21.2	keep	local M3 Max baseline (public AdamW train.py)
 f555d09	1.801391	21.2	keep	set WINDOW_PATTERN to L
+1bcaf98	1.319803	21.2	keep	port Muon optimizer
