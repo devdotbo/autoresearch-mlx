@@ -9,6 +9,7 @@ import math
 import os
 import time
 from dataclasses import dataclass
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -545,6 +546,9 @@ config = GPTConfig(
 model = GPT(config)
 model.init_weights()
 mx.eval(model.parameters())
+# Materialize the fixed training masks before tracing so compile never mutates the cache.
+model._get_masks(MAX_SEQ_LEN)
+mx.eval(*tuple(model._mask_cache.values()))
 num_params = sum(param.size for _, param in tree_flatten(model.parameters()))
 
 tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
@@ -561,7 +565,13 @@ optimizer = MuonAdamW(
     scalar_lr=SCALAR_LR,
 )
 
-loss_grad_fn = nn.value_and_grad(model, lambda model, inputs, targets: model(inputs, targets=targets))
+_loss_grad_fn = nn.value_and_grad(model, lambda inputs, targets: model(inputs, targets=targets))
+compiled_state = [model.state]
+
+
+@partial(mx.compile, inputs=compiled_state, outputs=compiled_state)
+def loss_grad_fn(inputs, targets):
+    return _loss_grad_fn(inputs, targets)
 
 print(f"Time budget: {TIME_BUDGET}s")
 print(f"Gradient accumulation steps: {grad_accum_steps}")
@@ -577,11 +587,11 @@ while True:
     train_loss = None
 
     for _ in range(grad_accum_steps):
-        loss, grads = loss_grad_fn(model, x, y)
+        loss, grads = loss_grad_fn(x, y)
         mx.eval(loss, grads)
         if t_compiled is None:
             t_compiled = time.time()
-            print(f"Model compiled in {t_compiled - t_data:.1f}s")
+            print(f"Startup finished in {t_compiled - t_data:.1f}s")
         train_loss = loss
         if accum_grads is None:
             accum_grads = grads

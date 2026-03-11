@@ -58,6 +58,18 @@ Longer overnight runs on the working MLX port pushed much further. The long Mac 
 
 The Mac Mini result matters because it did not just rediscover the same exact recipe. On smaller Apple Silicon hardware, the strongest changes leaned toward more aggressive step-efficiency wins. Later transfer tests showed some of those Mac Mini findings did not carry cleanly onto the Max baseline, which is exactly the kind of hardware-specific behavior this loop is useful for uncovering.
 
+## Recent M3 Max compile result
+
+A fresh M3 Max A/B on the working branch tested compiling only the forward+backward path (`nn.value_and_grad`) while leaving the optimizer uncompiled. On this machine, that low-risk `mx.compile` change was a clear win.
+
+| Mode | val_bpb | Steps | Total tokens | Peak memory | Steady-state tok/sec |
+|---|---:|---:|---:|---:|---:|
+| `mx.compile` on loss+grad | 1.258264 | 572 | 37.5M | 27.0 GB | ~126k-129k |
+| `MLX_DISABLE_COMPILE=1` control | 1.283851 | 449 | 29.4M | 27.0 GB | ~98k-100k |
+
+- Improvement: `+123` steps in-budget, about 28% higher throughput, and `-0.025587` `val_bpb` at flat peak memory.
+- Scope: only the loss/gradient path is compiled. The optimizer remains eager to keep the change local to the main compute path.
+
 ## Differences from upstream
 
 - **MLX instead of PyTorch/CUDA.** Native Apple Silicon training with unified memory.
