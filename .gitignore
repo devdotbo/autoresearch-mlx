@@ -8,3 +8,5 @@ surfaces.txt
 surface-verify-prompt.md
 build-2-closeout.md
 reference/
+runs/muon-baseline-v1/
+runs/scout-*/
