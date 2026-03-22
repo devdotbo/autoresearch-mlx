@@ -1,0 +1,9 @@
+{
+  "experiment_tag": "muon-baseline-v2",
+  "seeds": [42, 137, 256],
+  "base_commit": "8fc07f5",
+  "changed_knobs": {},
+  "machine": "boozk",
+  "timestamp_utc": "2026-03-22T13:43:35Z",
+  "baseline_tag": null
+}

@@ -4,3 +4,5 @@ c67ad2a	2.695369	26.9	discard	lower weight decay to 0.1
 909dd59	2.588904	26.9	keep	halve total batch size to 2^16
 4161af3	2.533728	26.9	keep	increase matrix LR to 0.04
 5efc7aa	1.807902	20.7	keep	reduce depth from 8 to 4
+8fc07f5	1.268219	26.4	keep	3-seed muon-baseline-v2 n=3 mean/std 1.268219+-0.006143 runs/muon-baseline-v2
+d9eafdf	1.245257	26.7	keep	3-seed E3 CACA swiglu k=3 n=3 mean/std 1.245257+-0.000425 keep vs baseline by 0.022962
