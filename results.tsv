@@ -8,3 +8,4 @@ ba6ebf6	1.803905	21.2	keep	local M3 Max baseline (public AdamW train.py)
 f555d09	1.801391	21.2	keep	set WINDOW_PATTERN to L
 1bcaf98	1.319803	21.2	keep	port Muon optimizer
 29a6812	1.294638	26.4	keep	cast residual scalars to hidden dtype; align mask dtype for bf16 path
+0e920d5	1.264562	26.4	keep	refresh E0 baseline on autoresearch/mar22-lfm2-wide
