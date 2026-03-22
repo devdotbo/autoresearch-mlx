@@ -54,6 +54,7 @@ class GPTConfig:
     window_pattern: str = "SSSL"
     block_pattern: str = "AAAAAAAAAAAA"
     mlp_type: str = "relu2"
+    conv_kernel_size: int = 3
 
 
 def norm(x):
@@ -189,14 +190,14 @@ class SwiGLUMLP(nn.Module):
 
 
 class GatedShortConv(nn.Module):
-    def __init__(self, config, kernel_size=3):
+    def __init__(self, config):
         super().__init__()
-        self.kernel_size = kernel_size
+        self.kernel_size = config.conv_kernel_size
         self.in_proj = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
         self.conv = nn.Conv1d(
             config.n_embd,
             config.n_embd,
-            kernel_size,
+            self.kernel_size,
             groups=config.n_embd,
             bias=False,
         )
@@ -683,7 +684,9 @@ SEED = env_int("AUTORESEARCH_SEED", 42)
 USE_MUON = env_str("AUTORESEARCH_OPTIMIZER", "muon").lower() == "muon"
 BLOCK_PATTERN = env_str("AUTORESEARCH_BLOCK_PATTERN", "A" * DEPTH).upper()
 MLP_TYPE = env_str("AUTORESEARCH_MLP_TYPE", "relu2").lower()
+CONV_KERNEL_SIZE = env_int("AUTORESEARCH_CONV_KERNEL_SIZE", 3)
 assert len(BLOCK_PATTERN) == DEPTH
+assert CONV_KERNEL_SIZE > 0
 
 
 def get_lr_multiplier(progress):
@@ -737,6 +740,7 @@ config = GPTConfig(
     window_pattern=WINDOW_PATTERN,
     block_pattern=BLOCK_PATTERN,
     mlp_type=MLP_TYPE,
+    conv_kernel_size=CONV_KERNEL_SIZE,
 )
 
 model = GPT(config)
@@ -882,6 +886,7 @@ record = {
     "window_pattern": WINDOW_PATTERN,
     "block_pattern": BLOCK_PATTERN,
     "mlp_type": MLP_TYPE,
+    "conv_kernel_size": CONV_KERNEL_SIZE,
     "num_params_M": round(num_params / 1e6, 1),
     "matrix_lr": MATRIX_LR,
     "effective_matrix_lr": MATRIX_LR,
