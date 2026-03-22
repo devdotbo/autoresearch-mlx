@@ -1,7 +1,7 @@
 {
   "experiment_tag": "lfm2-caca-swiglu-k3-v1",
   "seeds": [42, 137, 256],
-  "base_commit": "ca60686",
+  "base_commit": "d9eafdf",
   "changed_knobs": {
     "AUTORESEARCH_BLOCK_PATTERN": "CACA",
     "AUTORESEARCH_MLP_TYPE": "swiglu",
