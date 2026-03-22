@@ -11,3 +11,6 @@ f555d09	1.801391	21.2	keep	set WINDOW_PATTERN to L
 0e920d5	1.264562	26.4	keep	refresh E0 baseline on autoresearch/mar22-lfm2-wide
 a614c88	1.260271	26.4	keep	E1 refactor parity check (AAAA, relu2)
 a614c88	1.254662	26.7	keep	E2 SwiGLU baseline (AAAA, swiglu)
+a614c88	1.246462	26.7	keep	E3 conv sweep winner (CACA, swiglu)
+a614c88	1.279187	26.7	discard	E4 conv sweep (CCAC, swiglu)
+a614c88	1.268084	26.7	discard	E5 conv sweep (CCCA, swiglu)
