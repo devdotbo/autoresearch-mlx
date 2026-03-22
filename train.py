@@ -52,6 +52,8 @@ class GPTConfig:
     n_kv_head: int = 6
     n_embd: int = 768
     window_pattern: str = "SSSL"
+    block_pattern: str = "AAAAAAAAAAAA"
+    mlp_type: str = "relu2"
 
 
 def norm(x):
@@ -172,14 +174,64 @@ class MLP(nn.Module):
         return self.c_proj(x)
 
 
-class Block(nn.Module):
-    def __init__(self, config, layer_idx):
+class SwiGLUMLP(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        self.attn = CausalSelfAttention(config, layer_idx)
-        self.mlp = MLP(config)
+        hidden_dim = (8 * config.n_embd + 2) // 3
+        self.gate_proj = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, config.n_embd, bias=False)
+
+    def __call__(self, x):
+        gate = nn.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        return self.down_proj(gate * up)
+
+
+class GatedShortConv(nn.Module):
+    def __init__(self, config, kernel_size=3):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.in_proj = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
+        self.conv = nn.Conv1d(
+            config.n_embd,
+            config.n_embd,
+            kernel_size,
+            groups=config.n_embd,
+            bias=False,
+        )
+        self.out_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+
+    def __call__(self, x, ve=None, mask=None):
+        del ve, mask
+        gate_b, gate_c, x_proj = mx.split(self.in_proj(x), 3, axis=-1)
+        x_proj = mx.pad(x_proj * gate_b, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
+        x_proj = self.conv(x_proj)
+        return self.out_proj(gate_c * x_proj)
+
+
+class Block(nn.Module):
+    def __init__(self, config, layer_idx, operator_type):
+        super().__init__()
+        self.operator_type = operator_type.upper()
+        if self.operator_type == "A":
+            self.operator = CausalSelfAttention(config, layer_idx)
+        elif self.operator_type == "C":
+            self.operator = GatedShortConv(config)
+        else:
+            raise ValueError(f"Unsupported operator type: {operator_type}")
+
+        mlp_type = config.mlp_type.lower()
+        if mlp_type == "relu2":
+            self.mlp = MLP(config)
+        elif mlp_type == "swiglu":
+            self.mlp = SwiGLUMLP(config)
+        else:
+            raise ValueError(f"Unsupported MLP type: {config.mlp_type}")
 
     def __call__(self, x, ve, mask):
-        x = x + self.attn(norm(x), ve, mask)
+        operator_mask = mask if self.operator_type == "A" else None
+        x = x + self.operator(norm(x), ve, operator_mask)
         x = x + self.mlp(norm(x))
         return x
 
@@ -190,7 +242,10 @@ class GPT(nn.Module):
         self.config = config
         self.window_sizes = self._compute_window_sizes(config)
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.blocks = [Block(config, i) for i in range(config.n_layer)]
+        pattern = config.block_pattern.upper()
+        assert len(pattern) == config.n_layer
+        assert all(char in "AC" for char in pattern)
+        self.blocks = [Block(config, i, operator_type=pattern[i]) for i in range(config.n_layer)]
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.resid_lambdas = mx.ones((config.n_layer,), dtype=mx.float32)
         self.x0_lambdas = mx.zeros((config.n_layer,), dtype=mx.float32)
@@ -213,22 +268,47 @@ class GPT(nn.Module):
         )
 
         for block in self.blocks:
-            block.attn.c_q.weight = mx.random.uniform(
-                -scale, scale, block.attn.c_q.weight.shape
-            ).astype(mx.bfloat16)
-            block.attn.c_k.weight = mx.random.uniform(
-                -scale, scale, block.attn.c_k.weight.shape
-            ).astype(mx.bfloat16)
-            block.attn.c_v.weight = mx.random.uniform(
-                -scale, scale, block.attn.c_v.weight.shape
-            ).astype(mx.bfloat16)
-            block.attn.c_proj.weight = mx.zeros_like(block.attn.c_proj.weight).astype(mx.bfloat16)
-            block.mlp.c_fc.weight = mx.random.uniform(
-                -scale, scale, block.mlp.c_fc.weight.shape
-            ).astype(mx.bfloat16)
-            block.mlp.c_proj.weight = mx.zeros_like(block.mlp.c_proj.weight).astype(mx.bfloat16)
-            if block.attn.ve_gate is not None:
-                block.attn.ve_gate.weight = mx.zeros_like(block.attn.ve_gate.weight).astype(
+            if isinstance(block.operator, CausalSelfAttention):
+                block.operator.c_q.weight = mx.random.uniform(
+                    -scale, scale, block.operator.c_q.weight.shape
+                ).astype(mx.bfloat16)
+                block.operator.c_k.weight = mx.random.uniform(
+                    -scale, scale, block.operator.c_k.weight.shape
+                ).astype(mx.bfloat16)
+                block.operator.c_v.weight = mx.random.uniform(
+                    -scale, scale, block.operator.c_v.weight.shape
+                ).astype(mx.bfloat16)
+                block.operator.c_proj.weight = mx.zeros_like(block.operator.c_proj.weight).astype(
+                    mx.bfloat16
+                )
+                if block.operator.ve_gate is not None:
+                    block.operator.ve_gate.weight = mx.zeros_like(
+                        block.operator.ve_gate.weight
+                    ).astype(mx.bfloat16)
+            elif isinstance(block.operator, GatedShortConv):
+                block.operator.in_proj.weight = mx.random.uniform(
+                    -scale, scale, block.operator.in_proj.weight.shape
+                ).astype(mx.bfloat16)
+                block.operator.conv.weight = mx.random.uniform(
+                    -scale, scale, block.operator.conv.weight.shape
+                ).astype(mx.bfloat16)
+                block.operator.out_proj.weight = mx.zeros_like(
+                    block.operator.out_proj.weight
+                ).astype(mx.bfloat16)
+
+            if isinstance(block.mlp, MLP):
+                block.mlp.c_fc.weight = mx.random.uniform(
+                    -scale, scale, block.mlp.c_fc.weight.shape
+                ).astype(mx.bfloat16)
+                block.mlp.c_proj.weight = mx.zeros_like(block.mlp.c_proj.weight).astype(mx.bfloat16)
+            elif isinstance(block.mlp, SwiGLUMLP):
+                block.mlp.gate_proj.weight = mx.random.uniform(
+                    -scale, scale, block.mlp.gate_proj.weight.shape
+                ).astype(mx.bfloat16)
+                block.mlp.up_proj.weight = mx.random.uniform(
+                    -scale, scale, block.mlp.up_proj.weight.shape
+                ).astype(mx.bfloat16)
+                block.mlp.down_proj.weight = mx.zeros_like(block.mlp.down_proj.weight).astype(
                     mx.bfloat16
                 )
 
@@ -601,6 +681,9 @@ FINAL_EVAL_BATCH_SIZE = env_int("AUTORESEARCH_FINAL_EVAL_BATCH_SIZE", 256)
 STARTUP_EXCLUDE_STEPS = env_int("AUTORESEARCH_STARTUP_EXCLUDE_STEPS", 1)
 SEED = env_int("AUTORESEARCH_SEED", 42)
 USE_MUON = env_str("AUTORESEARCH_OPTIMIZER", "muon").lower() == "muon"
+BLOCK_PATTERN = env_str("AUTORESEARCH_BLOCK_PATTERN", "A" * DEPTH).upper()
+MLP_TYPE = env_str("AUTORESEARCH_MLP_TYPE", "relu2").lower()
+assert len(BLOCK_PATTERN) == DEPTH
 
 
 def get_lr_multiplier(progress):
@@ -652,6 +735,8 @@ config = GPTConfig(
     n_kv_head=model_dim // HEAD_DIM,
     n_embd=model_dim,
     window_pattern=WINDOW_PATTERN,
+    block_pattern=BLOCK_PATTERN,
+    mlp_type=MLP_TYPE,
 )
 
 model = GPT(config)
@@ -795,6 +880,8 @@ record = {
     "aspect_ratio": ASPECT_RATIO,
     "head_dim": HEAD_DIM,
     "window_pattern": WINDOW_PATTERN,
+    "block_pattern": BLOCK_PATTERN,
+    "mlp_type": MLP_TYPE,
     "num_params_M": round(num_params / 1e6, 1),
     "matrix_lr": MATRIX_LR,
     "effective_matrix_lr": MATRIX_LR,
