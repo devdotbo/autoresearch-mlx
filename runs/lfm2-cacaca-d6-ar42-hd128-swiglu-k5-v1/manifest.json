@@ -1,0 +1,16 @@
+{
+  "experiment_tag": "lfm2-cacaca-d6-ar42-hd128-swiglu-k5-v1",
+  "seeds": [42, 137, 256],
+  "base_commit": "ca60686",
+  "changed_knobs": {
+    "AUTORESEARCH_DEPTH": 6,
+    "AUTORESEARCH_ASPECT_RATIO": 42,
+    "AUTORESEARCH_HEAD_DIM": 128,
+    "AUTORESEARCH_BLOCK_PATTERN": "CACACA",
+    "AUTORESEARCH_MLP_TYPE": "swiglu",
+    "AUTORESEARCH_CONV_KERNEL_SIZE": 5
+  },
+  "machine": "boozk",
+  "timestamp_utc": "2026-03-22T13:43:35Z",
+  "baseline_tag": "muon-baseline-v2"
+}
